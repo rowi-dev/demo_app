@@ -1,0 +1,366 @@
+Here’s a **Confluence-ready version** (clean headings, tables, no code block IDs, copy-paste friendly):
+
+---
+
+# GBPS Charge Service – Rule Evaluation Architecture
+
+## 1. Executive Summary
+
+This document describes the design of a **Charge Evaluation Microservice** to replace the existing **eDMI-based charge derivation**.
+
+The new solution introduces:
+
+* Rule-driven evaluation engine
+* Event-driven rule synchronization via Solace
+* GBPS-aligned data model
+* High-performance indexed rule evaluation
+
+**Outcome:**
+A scalable, auditable, and high-performance charge evaluation platform aligned with GBPS.
+
+---
+
+## 2. Problem Statement
+
+### Current Limitations (eDMI-based)
+
+* Tight coupling with external system
+* Limited transparency in rule execution
+* Difficult debugging and auditability
+* Performance constraints at scale
+* Limited flexibility for rule evolution
+
+---
+
+## 3. Target Architecture Overview
+
+### 3.1 Rule Synchronization Flow
+
+```
+GBPS → Solace Topic → Charge Service → rpe_charge_db
+```
+
+### 3.2 Runtime Evaluation Flow
+
+```
+RPE TT → Charge Service → Rule Evaluation → Charge Calculation → Response
+```
+
+### 3.3 Component Responsibilities
+
+| Component      | Responsibility                                          |
+| -------------- | ------------------------------------------------------- |
+| GBPS           | Publishes rule data (JSON)                              |
+| Solace         | Event transport                                         |
+| Charge Service | Rule ingestion, storage, evaluation, charge computation |
+| RPE TT         | Invokes charge evaluation                               |
+| rpe_charge_db  | Persistent rule store                                   |
+
+---
+
+## 4. Key Architectural Decisions
+
+### 4.1 Data Model Strategy – GBPS-Aligned Schema
+
+**Decision:**
+
+* Reuse GBPS table structure
+* Introduce surrogate ID columns where required
+
+**Rationale:**
+
+* JSON payload aligns with GBPS schema
+* Minimizes transformation complexity
+* Simplifies debugging and reconciliation
+* Reduces schema drift
+
+**Trade-offs:**
+
+| Advantage            | Trade-off                |
+| -------------------- | ------------------------ |
+| Simplified ingestion | Less schema flexibility  |
+| Easier debugging     | Composite key complexity |
+| Upstream alignment   | Slight query complexity  |
+
+---
+
+### 4.2 Rule Evaluation Approach
+
+Rejected:
+
+* Spring Expression Language
+
+Selected:
+
+* Custom Manual Indexed Rule Engine
+
+**Rationale:**
+
+| Factor       | SpEL     | Manual Indexed |
+| ------------ | -------- | -------------- |
+| Performance  | Moderate | High           |
+| Scalability  | Limited  | Strong         |
+| Debugging    | Limited  | Detailed       |
+| Security     | Risky    | Controlled     |
+| Optimization | None     | Supported      |
+
+---
+
+## 5. Rule Evaluation Engine Design
+
+### 5.1 Request Context Model
+
+Incoming request is flattened into:
+
+```
+header.pmtTp = TT  
+data.chrgsInf.chrgBr = DEBT  
+```
+
+---
+
+### 5.2 Index Structure
+
+```
+Map<path, Map<value, List<ruleId>>>
+```
+
+Example:
+
+```
+header.pmtTp → TT → [rule1, rule2]  
+```
+
+---
+
+### 5.3 Evaluation Flow
+
+1. Extract and flatten request context
+2. Identify candidate rules using index
+3. Intersect rule sets (AND conditions)
+4. Perform exact evaluation for:
+
+   * OR conditions
+   * != conditions
+   * cross-field comparisons
+5. Select matching rule(s)
+
+---
+
+## 6. Advanced Rule Handling
+
+### 6.1 Nested Path Handling
+
+Example:
+
+```
+data.cbs.enqryInf.CHRG.casaSgmntIdr
+```
+
+Approach:
+
+* Normalize paths into dot notation
+
+---
+
+### 6.2 List Handling
+
+Example:
+
+```
+data.txSttImInf.dbtSttLmAcct[0].ccy
+```
+
+Approach:
+
+* Flatten indexed elements:
+
+```
+dbtSttLmAcct[0].ccy = LKR
+```
+
+Future enhancement:
+
+```
+dbtSttLmAcct[*].ccy
+```
+
+---
+
+### 6.3 Cross-Field Comparison
+
+Example:
+
+```
+dbt.ccy != cdt.ccy
+```
+
+Approach:
+
+* Resolve both paths at runtime
+* Compare values dynamically
+
+---
+
+### 6.4 OR Condition Handling
+
+* Indexing applied only to AND conditions
+* OR conditions evaluated in final stage
+
+---
+
+### 6.5 Non-Indexable Conditions
+
+Handled during final evaluation:
+
+* !=
+* cross-field comparisons
+* dynamic values
+
+---
+
+## 7. Charge Calculation Engine
+
+### Design Pattern
+
+Strategy Pattern (Factory-based)
+
+### Supported Types
+
+* Fixed charges
+* Percentage-based
+* Tiered/slab-based
+
+### Flow
+
+```
+Rule → Strategy Resolver → Calculation → Result
+```
+
+---
+
+## 8. Data Ingestion & Synchronization
+
+### Model
+
+* Source: GBPS
+* Transport: Solace
+* Format: JSON
+
+### Supported Operations
+
+* Insert
+* Update
+* Delete
+
+### Requirements
+
+* Idempotent processing
+* Retry handling
+* Schema validation
+
+---
+
+## 9. Non-Functional Considerations
+
+### Performance
+
+* Indexed filtering reduces evaluation complexity
+* O(N) → O(K), where K ≪ N
+
+### Scalability
+
+* Stateless service
+* Horizontal scaling supported
+
+### Reliability
+
+* Event-driven sync with retry
+* Graceful degradation
+
+### Observability
+
+* Logs:
+
+  * matched rules
+  * failed conditions
+* Metrics:
+
+  * evaluation latency
+  * candidate rule count
+
+### Security
+
+* No dynamic execution
+* Controlled operators only
+
+---
+
+## 10. Risks & Mitigations
+
+| Risk                    | Mitigation         |
+| ----------------------- | ------------------ |
+| Rule complexity growth  | Controlled DSL     |
+| Index memory overhead   | Selective indexing |
+| List handling ambiguity | Strict rules       |
+| Sync inconsistency      | Idempotent updates |
+| Debugging complexity    | Detailed logs      |
+
+---
+
+## 11. Migration Strategy
+
+### Phase 1
+
+* Build ingestion pipeline
+* Store rules
+
+### Phase 2
+
+* Implement evaluator
+
+### Phase 3
+
+* Add indexing
+
+### Phase 4
+
+* Add charge calculation
+
+### Phase 5
+
+* Replace eDMI
+
+---
+
+## 12. Open Questions
+
+* Wildcard support for lists (`[*]`)
+* Rule priority handling
+* Index size limits
+* Sync consistency SLA
+
+---
+
+## 13. Final Recommendation
+
+The proposed solution provides:
+
+* High performance through indexed evaluation
+* Strong maintainability via structured rules
+* Full auditability and traceability
+* Scalability aligned with microservices
+
+---
+
+## 14. Conclusion
+
+This design establishes a **robust, scalable, and enterprise-grade charge evaluation system**, replacing eDMI and aligning with GBPS for long-term evolution.
+
+---
+
+If you want, I can also:
+
+* Convert this into a **Confluence template with collapsible sections**
+* Add **sequence diagrams (draw.io style)**
+* Or prepare a **separate Rule Authoring Guide page** which is usually required next after this doc
